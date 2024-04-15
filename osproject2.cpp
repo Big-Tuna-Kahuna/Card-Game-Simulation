@@ -1,558 +1,460 @@
 #include <iostream>
-#include <fstream>
-#include <queue>
+#include <pthread.h>
+#include <unistd.h>
 #include <cstdlib>
-
+#include <bits/stdc++.h>
+#include <queue>
+#define NUM_PLAYERS 3
 using namespace std;
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
+// Thread Global Variables
+pthread_cond_t p1 = PTHREAD_COND_INITIALIZER;
+pthread_cond_t p2 = PTHREAD_COND_INITIALIZER;
+pthread_cond_t p3 = PTHREAD_COND_INITIALIZER;
+pthread_cond_t d1 = PTHREAD_COND_INITIALIZER;
+static pthread_mutex_t player_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t dealer_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-////////////////////////////////////////////////////////////////
-#define ARR 1
-#define TSO 2
-#define DEP 3
-#define FCFS 1
-#define SJF 2
-#define RR 3
-////////////////////////////////////////////////////////////////
-//event structure
-struct event{
-    float time;
-    int   type;
-    struct event* next;
-    struct process* p;
-};
 
-////////////////////////////////////////////////////////////////
-//process structure
-struct process {
-    int pid;
-    struct process* next;
-    struct event* e;
-    float arrivalTime;
-    float serviceTime;
-    float originalBurst;
-    float burstTime;
-    float waitTime;
-    float startQueueTime;
-    //float remainingTime;
-};
-//This is for object creation for each process in order to just simply pass the whole
-//object into .dat file. So create a process object off of data recieved from process at its departure?
-/** VALUES:
-*          pid- Pass in the pid of the process that is being written along with its following data.
-*          timeArrival- Passes in the time that the process has entered the CPU
-*          timeCompletion- Pass in the time that the process has completed its run.
-*          timeRemaining- Pass in the time that the process has remaining in order to complete.
-*          timeBurst- Pass in the burst value the process is doing for ROUND ROBIN ONLY if other just pass 0 or null?
-*          state- Pass in the state of the process, 1 for arrivals and 2 for departures?
-*          avgWait- Average waiting time the process encountered.
-*          All of these variables are based off of the template values and needs for the excel sheet that Dr. Palacios gave us.
-*/
-class processObj {
+//****Start Class Definition Deck****
+//Contains all the functions that the threads will be using to manipulate
+//the deck of cards simulated by a queue.
+class Deck {
 public:
-    int pid;
-    float timeArrival;
-    float timeCompletion;
-    float timeRemaining;
-    float timeBurst;
-    float wait;
-    int state;
-    float originalBurst;
-    float startQueueTime;
-    float turnAround;
+    Deck();
+    //variables for each of the two cards the players will have in hand
+    int player1Card1 = 0;
+    int player2Card1 = 0;
+    int player3Card1 = 0;
+    int player1Card2 = 0;
+    int player2Card2 = 0;
+    int player3Card2 = 0;
+    int roundOver = 0;      //counter for each player thread that exits signaling round is over
+    bool win = false;       //signals to dealer and players that winner is declared
+    fstream logFile;        //output to log file
+    void printCards();      //prints deck
+    void printCardsLog();   //prints deck to logfile
+    void shuffle(int);      //shuffles deck
+    void returnCard(int);   //puts player card back in deck
+    void setSeed(int);      //sets seed from argv for random function
+    int drawCard();         //enables player and dealers to select card from deck
+    int randomCard();       //returns which card player should return to deck from hand
+
+private:
+    int cardDeck[52];       //card array to shuffle cards before putting them in queue
+    int seed = 0;           //seed for rand function
+    void createDeck();      //Creates deck
+    queue<int> cardQueue;   //Queue to hold cards
 };
-////////////////////////////////////////////////////////////////
-// function definition
-void init();
-int run_sim();
-void generate_report(int condition, processObj processObj);
-int schedule_event(int, float, struct process* p);
-int process_Arrival(struct event* eve);
-int process_Depart(struct event* eve);
-int process_TimeSlice(struct event* eve);
-void firstComeFirstServe(struct event* eve);
-void shortJobFirst(struct event* eve);
-void roundRobin(struct event* eve);
 
-////////////////////////////////////////////////////////////////
-//Global variables
-struct event* head; // head of event list
-struct process* pHead;//head of process list
-struct process* currentRunning;//pointer to current process being serviced, NULL if no process.
-float sClock; // simulation clock
-float arrivalTime;//simulation clock + genxp(1-30)
-float serviceTime;//simulation clock + genxp(1/.06)
-int PID = 0;
-int numProcess = 0;
-float quantum = 0;
-int userAlgoSelection;
-float arrivalRate;
-float burstSeed;
-float originalBurst;
-float userQuantum = 0;
-////////////////////////////////////////////////////////////////
-int main(int argc, char *argv[] )
-{
-    // parse arguments
-    // the user arguments from commandline are passed in here
-    userAlgoSelection = atoi(argv[1]);
-    arrivalRate = atof(argv[2]);
-    burstSeed = atof(argv[3]);
-    userQuantum = atof(argv[4]);
-    init();
-    run_sim();
-
-    return 0;
+//Class Functions-----------------------------------------------------------------------
+//Constructor that builds deck
+Deck::Deck() {
+    createDeck();
 }
-////////////////////////////////////////////////////////////////
-// returns a random number between 0 and 1
-float urand()
-{
-    return( (float) rand()/RAND_MAX );
+
+//Returns 1 or 2 randomly for player to decide which card from hand to discard
+int Deck::randomCard() {
+    int num = 0;
+    num = 1 + (rand() % 2);
+    return num;
 }
-/////////////////////////////////////////////////////////////
-// returns a random number that follows an exp distribution(what point in time the event arrives)
-float genexp(float lambda)
-{
-    float u,x;
-    x = 0;
-    while (x == 0)
-    {
-        u = urand();
-        x = (-1/lambda)*log(u);
-    }
-    return(x);
+
+//Returns a card to bottom of Deck
+void Deck::returnCard(int card) {
+    cardQueue.push(card);
+
 }
-// Data is being written to our .dat file here, to later be imported into excel to make visual data.
-/** PARAMETERS: endCondtion- How do we want to end the finishing of writing all data to file? (num processes completed?)
-*               processObj- Takes in the created process object and all of its data in order to easily place all data for the process accurately.s
-*/
-void generate_report(int endCondition, processObj processObj)
-{
-    // output statistics
-    ofstream write_file; //File stream file create
-    write_file.open("main.dat", fstream::app);
 
-    //Error handling if the file doesn't exist for some reason prompt user to create file.
-    if( !write_file ) { // file couldn't be opened
-        cerr << "Error: file could not be opened, please create the file as 'main.dat'" << endl;
-        exit(1);
-    }
-
-    //While loop to start writing data from inputs into the .dat file?
-    //Create an object and write the data to it per process then write each whole process object to the file.
-    //End condition value needs to move and change with the value of processes we are running so in the end will be 10000.
-    if (endCondition != 10000)
-    {
-        //Write whole object data into file:
-        write_file <<  processObj.pid << ", ";
-        write_file << processObj.startQueueTime << ", ";
-        write_file <<  processObj.timeCompletion << ", ";
-        write_file <<  processObj.originalBurst << ", ";
-        write_file <<  processObj.wait << ", ";
-        write_file << processObj.turnAround << ", ";
-        write_file.write("\n", 1); //Start new line to keep track of each individual processes.
-        //Eventually just have this count each process in and uptick by 1 ? uncomment below line if needed.
-        //endCondition++;
-    }
-    //Close the file when done
-    write_file.close();
+//Gets a card from top of deck
+int Deck::drawCard() {
+    int card = 0;
+    card = cardQueue.front();
+    cardQueue.pop();
+    return card;
 }
-////////////////////////////////////////////////////////////////
-//schedules a future event for either an arrival or departure of a process. If the request is for a new
-//arrival event then a new process will be created and the address will be passed to the new arrival event.
-//if the event requested is a departure event then that means a process entered the simulated cpu
-//to be serviced and will come with a service time of the process, an address or ID of that process, and a departure
-//event will be created and insertion sorted into a linked list of processes that are sorted from least time to greatest.
-int schedule_event(int type, float t, struct process* p)
-{
-    event* e;
-    event* iterator;
-    event* current;
 
-    switch(type){
-        case ARR:
-            e = new event();
-            p = new process();
-            p->pid = PID;
-            p->burstTime = genexp(1/burstSeed);
-            p->originalBurst = p->burstTime;
-            p->arrivalTime = 0;
-            p->waitTime = 0;
-            PID++;
-            e->type = type;
-            e->time = t;
-            e->p = p;
-            numProcess++;
-            break;
-        case TSO:
-            e = new event();
-            e->type = type;
-            e->time = t;
-            e->p = p;
-            break;
-        case DEP:
-            e = new event();
-            e->type = type;
-            e->time = t;
-            e->p = p;//event pointer to process
-            break;
-    }
+//Creates a deck in an array
+void Deck::createDeck() {
+    int face[] = {1,2,3,4,5,6,7,8,9,10,11,12,13};
+    int count = 0;
 
-    iterator = head;
-    if (iterator == NULL || iterator->time > e->time) {//case for head
-        e->next = iterator;
-        head = e;
-    }
-    else {
-        while (iterator->next != NULL && iterator->next->time <= e->time) {//while iterator event is less than e time and iterator not at end of list
-            iterator = iterator->next;//increment pointer
-        }
-        e->next = iterator->next;
-        iterator->next = e;
-    }
-    ///////////Debug-Logging//////////////
-    iterator = head;
-    if (e->type == ARR) {cout << "Scheduler: Arrival event scheduled for " << e->time << " with PID: " << e->p->pid << endl;}
-    else if (e->type == TSO) {cout << "Scheduler: TimeSlice event scheduled for " << e->time << " with PID: " << e->p->pid << endl;}
-    else {cout << "Scheduler: Departure event scheduled for " << e->time << " with PID: " << e->p->pid << endl;}
-    cout << "Simulated clock: " << sClock << endl;
-    cout << "\n****START Events in List****" << endl;
-    while (iterator != NULL) {
-        cout << "The time of event is " << iterator->time << " Type of event is " << iterator->type << endl;
-        iterator = iterator->next;
-    }
-    cout << "****END Events in List****\n" << endl;
-    return 0;
-}
-////////////////////////////////////////////////////////////////
-void init()
-{
-    sClock = 0;
-    quantum = userQuantum;//alternate value is .2
-    event* head = NULL;
-    arrivalTime = sClock + genexp(arrivalRate);//!!!!!!!!Remember to change lambda to variable from arg line!!!!!!
-    process* p = NULL;//new process is only created in schedule_event
-    schedule_event(ARR, arrivalTime, p);//schedule a new event and create new process
-}
-////////////////////////////////////////////////////////////////
-int run_sim()
-{
-    struct event* eve;//create pointer
-    bool run = true;
-
-    while (run)//on 10,000th departure created and handled, set end_condition to true
-    {
-        eve = head;//pointer points to head of event list
-
-        if (eve != NULL) {
-            sClock = eve->time;
-
-            switch (eve->type) {
-                case ARR:
-                    process_Arrival(eve);
-                    break;
-                case TSO:
-                    process_TimeSlice(eve);
-                    break;
-                case DEP:
-                    process_Depart(eve);
-                    break;
-                default:
-                    cout << "Error - Event type out of bounds" << endl;
-            }
-
-            head = eve->next;//point to next event in list
-            free(eve);//free event
-            eve = NULL;//delete event
-        }
-        else {
-            run = false;
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 13; j++) {
+            cardDeck[count] = face[j];
+            count++;
         }
     }
-    return 0;
 }
-////////////////////////////////////////////////////////////////
-int process_Arrival(struct event* eve) {
 
-    process* iterator;
-    iterator = pHead;
-
-    switch(userAlgoSelection) {//Selects which scheduler to use
-        case FCFS:
-            firstComeFirstServe(eve);
-            break;
-        case SJF:
-            shortJobFirst(eve);
-            break;
-        case RR:
-            roundRobin(eve);
-            break;
-    }
-
-    iterator = pHead;//reset iterator
-    while (iterator != NULL) {//print list of processes in queue
-        cout << iterator->pid << ", ";
-        iterator = iterator->next;
+//Prints out deck from queue and uses a temp queue to store original queue after each pop
+void Deck::printCards() {
+    int card = 0;
+    queue<int> temp;
+    while (!cardQueue.empty()) {
+        card = cardQueue.front();
+        cout << card << " ";
+        cardQueue.pop();
+        temp.push(card);
     }
     cout << endl;
-
-    if (numProcess <= 10000) {//!!!Change to command line arg!!!///
-        arrivalTime = sClock + genexp(arrivalRate);//!!!!Remember to replace with command line arg variable!!!!////
-        process *p = NULL;//new process is only created in schedule_event
-        schedule_event(ARR, arrivalTime, p);//Schedule new arrival event and create new process
+    while (!temp.empty()) {
+        card = temp.front();
+        temp.pop();
+        cardQueue.push(card);
     }
+}
+
+//Does the same as the printCards function but outputs to logfile.txt
+void Deck::printCardsLog() {
+    int card = 0;
+    queue<int> temp;
+    while (!cardQueue.empty()) {
+        card = cardQueue.front();
+        logFile << card << " ";
+        cardQueue.pop();
+        temp.push(card);
+    }
+    logFile << endl;
+    while (!temp.empty()) {
+        card = temp.front();
+        temp.pop();
+        cardQueue.push(card);
+    }
+}
+
+//Clears the card queue and shuffles new arrangement from card array and pushes back into queue
+void Deck::shuffle( int j) {
+    cardQueue = queue<int>();//clears current queue
+    std::shuffle(cardDeck, cardDeck + 52, default_random_engine(seed + j));
+    for (auto i : cardDeck) {cardQueue.push(i);}
+
+}
+
+//sets the seed for random functions
+void Deck::setSeed(int i) {seed = i;}
+
+//End Deck Class Functions---------------------------------------------------------------------
+
+//function prototypes
+void* dealer(void *roundNum);
+void* player(void *pid);
+
+//Global object declaration so threads can access deck1
+Deck deck1;
+
+//Main function---------------------------------------------------------------------------------
+int main(int argc, char* argv[]) {
+    //create pthread variables for players and dealer
+    pthread_t d1;
+    pthread_t players[NUM_PLAYERS];
+    //open logfile for write
+    deck1.logFile.open("logFile.txt", ios::out);
+    int roundNum = 1;//round number currently on
+    int userVar = 0;//variable for seed
+
+    if (argc == 1) {userVar = 1;}//if no argument on command line passed then seed set to default of 1
+    else {userVar = atoi( argv[1]);}//else assign seed from command line argument
+
+    deck1.setSeed(userVar);
+    srand(userVar);
+
+    if (roundNum == 1) {
+        pthread_create(&d1, NULL, &dealer, (void *)roundNum);//create dealer thread and pass round number
+        for( long i = 0; i < 3; i++) {
+            pthread_create(&players[i], NULL, &player, (void *)i);//create three player threads and pass player number
+        }
+        pthread_join(d1, NULL);//wait for dealer thread to continue
+        roundNum++;
+    }
+    if (roundNum == 2) {
+        pthread_create(&d1, NULL, &dealer, (void *)roundNum);
+        for( long i = 0; i < 3; i++) {
+            pthread_create(&players[i], NULL, &player, (void *)i);
+        }
+        pthread_join(d1, NULL);
+        roundNum++;
+    }
+    if (roundNum == 3) {
+        pthread_create(&d1, NULL, &dealer, (void *)roundNum);
+        for( long i = 0; i < 3; i++) {
+            pthread_create(&players[i], NULL, &player, (void *) i);
+        }
+        pthread_join(d1, NULL);
+        roundNum++;
+    }
+    //Closing of logfile
+    deck1.logFile.close();
+
+
     return 0;
 }
-//////////////////////////////////////////////////////////////////
-int process_Depart(struct event* eve) {
+//end Main-----------------------------------------------------------------------------------
 
-    //Generate report here: Gets snapshot of processes data before it is deleted:
-    processObj processObj;
-    processObj.pid = eve->p->pid;
-    processObj.startQueueTime = eve->p->startQueueTime; //This is technically the real arrival time.
-    processObj.originalBurst = eve->p->originalBurst;
-    processObj.wait = eve->p->waitTime;
-    processObj.timeCompletion = eve->p->serviceTime;
-    processObj.turnAround = eve->time - eve->p->startQueueTime; //Calculates process individual turnaround time.
+//dealer function for thread. Changes the order of players depending on which round. Round 1 player 1 begins,
+//round 2, player 2 begins, round 3, player 3 begins. Dealer shuffles deck and passes one card to each player.
+//then signals to each player beginning with player 1 on round 1 to execute their code. Then dealer waits
+//for player to signal back they are done with executing. Then dealer signals next player to play and waits.
+//When roundOver increments to 3 the dealer stops signaling players as their threads no longer exist and dealer
+//exits round.
+void* dealer(void *roundNum) {
+    long round = (long)roundNum;//passing round number arg
 
-    generate_report(1, processObj);
+    if (round == 1) {
+        cout << "Round 1!" << endl;
+        deck1.logFile << "\nDEALER: Shuffling Deck..." << endl;
+        deck1.logFile << "DEALER: Passing card to each player..." << endl;
+        deck1.shuffle(round);
+        deck1.player1Card1 = deck1.drawCard();//assigns first cards
+        deck1.player2Card1 = deck1.drawCard();
+        deck1.player3Card1 = deck1.drawCard();
 
-    cout << "Process: " << eve->p->pid << " has finished running." << endl;
-    if (pHead == NULL ) {//if process ready queue is empty
-        currentRunning = NULL;//then no processes are being serviced
+        while (deck1.roundOver < 3) {
+            if (deck1.roundOver < 3) {
+                pthread_cond_signal(&p1);//signal player 1 to play
+                pthread_cond_wait(&d1, &dealer_mutex);//wait for signal from player 1 that turn is over
+                if (deck1.win) {deck1.roundOver++;}
+            }
+            if (deck1.roundOver < 3) {
+                pthread_cond_signal(&p2);//signal player 2 to play
+                pthread_cond_wait(&d1, &dealer_mutex);//wait for player 2
+                if (deck1.win) {deck1.roundOver++;}
+            }
+            if (deck1.roundOver < 3) {
+                pthread_cond_signal(&p3);//signal player 3 to play
+                pthread_cond_wait(&d1, &dealer_mutex);//wait for player 3
+                if (deck1.win) {deck1.roundOver++;}
+            }
+        }
+        deck1.roundOver = 0;
+        deck1.win = false;
+    }
+    else if(round == 2) {
+        cout << "Round 2!" << endl;
+        deck1.logFile << "\nDEALER: Shuffling Deck..." << endl;
+        deck1.logFile << "Dealer passing card to each player..." << endl;
+        deck1.shuffle(round);
+        deck1.player1Card2 = 0;
+        deck1.player2Card2 = 0;
+        deck1.player3Card2 = 0;
+        deck1.player2Card1 = deck1.drawCard();
+        deck1.player3Card1 = deck1.drawCard();
+        deck1.player1Card1 = deck1.drawCard();
+        sleep(1);
+        while (deck1.roundOver < 3) {
+            if (deck1.roundOver < 3) {
+                pthread_cond_signal(&p2);
+                pthread_cond_wait(&d1, &dealer_mutex);
+                if (deck1.win) {deck1.roundOver++;}
+            }
+            if (deck1.roundOver < 3) {
+                pthread_cond_signal(&p3);
+                pthread_cond_wait(&d1, &dealer_mutex);
+                if (deck1.win) {deck1.roundOver++;}
+            }
+            if (deck1.roundOver < 3) {
+                pthread_cond_signal(&p1);
+                pthread_cond_wait(&d1, &dealer_mutex);
+                if (deck1.win) {deck1.roundOver++;}
+            }
+        }
+        deck1.roundOver = 0;
+        deck1.win = false;
+    }
+    else if(round == 3) {
+        cout << "Round 3!" << endl;
+        deck1.logFile << "\nDEALER: Shuffling Deck..." << endl;
+        deck1.logFile << "Dealer passing card to each player..." << endl;
+        deck1.shuffle(round);
+        deck1.player1Card2 = 0;
+        deck1.player2Card2 = 0;
+        deck1.player3Card2 = 0;
+        deck1.player3Card1 = deck1.drawCard();
+        deck1.player1Card1 = deck1.drawCard();
+        deck1.player2Card1 = deck1.drawCard();
+        sleep(1);
+        while (deck1.roundOver < 3) {
+            if (deck1.roundOver < 3) {
+                pthread_cond_signal(&p3);
+                pthread_cond_wait(&d1, &dealer_mutex);
+                if (deck1.win) {deck1.roundOver++;}
+            }
+            if (deck1.roundOver < 3) {
+                pthread_cond_signal(&p1);
+                pthread_cond_wait(&d1, &dealer_mutex);
+                if (deck1.win) {deck1.roundOver++;}
+            }
+            if (deck1.roundOver < 3) {
+                pthread_cond_signal(&p2);
+                pthread_cond_wait(&d1, &dealer_mutex);
+                if (deck1.win) {deck1.roundOver++;}
+            }
+        }
+        deck1.roundOver = 0;
+        deck1.win = false;
     }
     else {
-
-        cout << "DEPARTURE HANDLER: Process ID: " << pHead->pid << " fetched from ready queue and sent to CPU" << endl;
-        currentRunning = pHead;//current running process is next in processReadyQueue
-        //adds multiple wait times if process was in Process Ready Queue more than once.
-        currentRunning->waitTime = currentRunning->waitTime + (sClock - currentRunning->arrivalTime);
-        cout << "DEPARTURE HANDLER: Time waited in ProcessQueue: " << currentRunning->waitTime << endl;
-
-        if (userAlgoSelection == 3) {//!!!!if roundrobin scheme, change RR to command line variable!!!/////
-            if (currentRunning->burstTime > quantum) {//if the burst time of the process is greater than quantum time
-                serviceTime = quantum + sClock;//Assign system time process will complete.
-                currentRunning->serviceTime = serviceTime;
-                schedule_event(TSO, serviceTime, currentRunning);//schedule a timeslice event.
-                pHead = currentRunning->next;//make pHead the next process in the list
-                currentRunning->next = NULL;//detach process from processReadyQueue
-            }
-            else {//if the process will finish before the quantum time
-                serviceTime = sClock + currentRunning->burstTime;
-                currentRunning->serviceTime = serviceTime;
-                schedule_event(DEP, serviceTime, currentRunning);
-                pHead = currentRunning->next;//make pHead the next process in the list
-                currentRunning->next = NULL;//detach process from processReadyQueue
-            }
-        }
-        else {
-            serviceTime = sClock + currentRunning->burstTime;//get service time of the process
-            currentRunning->serviceTime = serviceTime;
-            schedule_event(DEP, serviceTime,pHead);//schedule departure event, assign service time of process, assign process
-            pHead = currentRunning->next;//Make pHead the next process in list
-            currentRunning->next = NULL;//detach process from processReadyQueue
-        }
-    }
-    process* p = eve->p;
-    free(p);
-    p = NULL;//delete process
-    return 0;
-}
-/////////////////////////////////////////////////////////////////
-int process_TimeSlice(struct event* eve) {
-    process* iterator;
-    iterator = pHead;
-
-    cout << "TIMESLICE HANDLER: Process ID: " << eve->p->pid << " preempted and put into Process ready queue" << endl;
-    eve->p->burstTime = eve->p->burstTime - quantum;//subtract quantum from burst time and assign new burst time
-
-
-    //Put process at end of Process Ready Queue
-    if (iterator == NULL) {//if list is empty
-        pHead = eve->p;
-
-    }
-    else {
-        while (iterator->next != NULL) {//move iterator to end of Process Queue
-            iterator = iterator->next;
-        }
-        iterator->next = eve->p;//Add process to end of Process Ready Queue
-    }
-    eve->p->arrivalTime = sClock;//record the arrival time of process in the readyQueue
-
-    iterator = pHead;
-    cout << "TIMESLICE: Process Ready Queue is... " << endl;
-    iterator = pHead;//reset iterator
-    while (iterator != NULL) {//print list of processes in queue
-        cout << iterator->pid << ", ";
-        iterator = iterator->next;
-    }
-    cout << endl;
-
-
-    //Grab new process from head of queue
-    cout << "TIMESLICE HANDLER: Process ID: " << pHead->pid << " fetched from ready queue and sent to CPU" << endl;
-    currentRunning = pHead;//current running process is next in processReadyQueue
-    //adds multiple wait times if process was in Process Ready Queue more than once.
-    currentRunning->waitTime = currentRunning->waitTime + (sClock - currentRunning->arrivalTime);
-    cout << "TIMESLICE HANDLER: Time waited in ProcessQueue: " << currentRunning->waitTime << endl;
-
-    cout << "TIMESLICE HANDLER: Process " << currentRunning->pid << " burst time is: " << currentRunning->burstTime << endl;
-    if (currentRunning->burstTime > quantum) {//if the burst time of the process is greater than quantum time
-        serviceTime = quantum + sClock;//Assign system time process will complete.
-        currentRunning->serviceTime = serviceTime;
-        schedule_event(TSO, serviceTime, currentRunning);//schedule a timeslice event.
-        pHead = currentRunning->next;//make pHead the next process in the list
-        currentRunning->next = NULL;//detach process from processReadyQueue
-    }
-    else {//if the process will finish before the quantum time
-        serviceTime = sClock + currentRunning->burstTime;
-        currentRunning->serviceTime = serviceTime;
-        schedule_event(DEP, serviceTime, currentRunning);
-        pHead = currentRunning->next;//make pHead the next process in the list
-        currentRunning->next = NULL;//detach process from processReadyQueue
+        cout << "ERROR: round variable out of bounds." << endl;
     }
 
 }
-/////////////////////////////////////////////////////////////////
-void firstComeFirstServe(struct event* eve) {
-    process* iterator;
-    iterator = pHead;
 
-    cout << "Arrival event arrived of time " << eve->time << " with PID of " << eve->p->pid << endl;
-    if (currentRunning == NULL) {//if no process is being serviced
-        currentRunning = eve->p;//set serverBusy pointer to the process being serviced
-        cout << "ARRIVAL HANDLER: Process ID: " << eve->p->pid << " being sent to CPU" << endl;
-        serviceTime = sClock + eve->p->burstTime;//get service time of the process by adding burst + clocktime
-        eve->p->serviceTime = serviceTime;
-        schedule_event(DEP, serviceTime, eve->p);//schedule an event when the process will complete
-    }
 
-    else {//if there is process being serviced, put it Process Ready Queue
-        if (iterator == NULL) {//if list is empty
-            pHead = eve->p;
-        }
-        else {
-            while (iterator->next != NULL) {//move iterator to end of Process Queue
-                iterator = iterator->next;
-            }
-            iterator->next = eve->p;//Add process to end of Process Ready Queue
-        }
-        eve->p->arrivalTime = sClock;//record the arrival time of process in the readyQueue
-        eve->p->startQueueTime = sClock;
-    }
-}
-//////////////////////////////////////////////////////////////////
-void shortJobFirst(struct event* eve) {
-    process* processIter;
-    event* temp;
-    event* prev;
-    processIter = pHead;
-    temp = head;
-    process* newProcess = eve->p;
+//Function for player threads. Each section of code is only executed by the player whos PID matches that section.
+//Before the player can access the Global Deck they must lock it so other threads cannot access it by mistake.
+void* player(void *pid) {
+    long playerNum = ((long) pid + 1);//Player PID which is unique to each thread
+    int num = 0;//Variable to random card discard selection
+    bool run = true;//run loop while true
 
-    cout << "Arrival event arrived of time " << eve->time << " with PID of " << eve->p->pid << endl;
-    if (currentRunning == NULL) {//if no process is being serviced
-        currentRunning = eve->p;//set serverBusy pointer to the process being serviced
-        cout << "ARRIVAL HANDLER: Process ID: " << eve->p->pid << " being sent to CPU" << endl;
-        serviceTime = sClock + eve->p->burstTime;//get service time of the process by adding burst + clocktime
-        eve->p->serviceTime = serviceTime;
-        schedule_event(DEP, serviceTime, eve->p);//schedule an event when the process will complete
-    }
-    else {//CPU busy, if process has less burst time than remaining time of process, preempt, otherwise put in ready queue
-        float timeRemaining = currentRunning->serviceTime - sClock;//get remaining run time of running process
+    while (run) {
+        if (playerNum == 1) {
+            pthread_mutex_lock(&player_mutex);//lock deck access from other threads
+            pthread_cond_wait(&p1, &player_mutex);//wait for signal from dealer to continue
 
-        if (newProcess->burstTime < timeRemaining) {
-            cout << "Process ID: " << newProcess->pid << " Preempting running Process ID: " << currentRunning->pid
-                 << endl;
-            currentRunning->burstTime = timeRemaining;
-            if (temp != NULL &&
-                temp->time == currentRunning->serviceTime) {//find DEP event in linked list and delete it
-                head = temp->next;
-                delete temp;
-            } else {
-                while (temp != NULL && temp->time != currentRunning->serviceTime) {
-                    prev = temp;
-                    temp = temp->next;
+            if (!deck1.win) {
+                deck1.player1Card2 = deck1.drawCard();//draw card from top of deck
+                deck1.logFile << "PLAYER 1: hand " << deck1.player1Card1 << endl;
+                deck1.logFile << "Player 1: draws " << deck1.player1Card2 << endl;
+
+                if (deck1.player1Card1 == deck1.player1Card2) {//if matching cards in hand then Win
+                    deck1.win = true;
+                    //output to console and logfile
+                    deck1.logFile << "PLAYER 1: hand " << deck1.player1Card1 << " " << deck1.player1Card2 << endl;
+                    deck1.logFile << "PLAYER 1: wins" << endl;
+                    cout << "PLAYER 1:" << endl;
+                    cout << "HAND " << deck1.player1Card1 << " " << deck1.player1Card2 << endl;
+                    cout << "WIN yes" << endl;
+                    cout << "PLAYER 2:" << endl;
+                    cout << "HAND " << deck1.player2Card1 << endl;
+                    cout << "WIN no" << endl;
+                    cout << "PLAYER 3:" << endl;
+                    cout << "HAND " << deck1.player3Card1 << endl;
+                    cout << "WIN no" << endl;
+                    cout << "DECK: ";
+                    deck1.printCards();
+
+                } else {//if not winning hand then discard random card
+                    num = deck1.randomCard();
+                    if (num == 1) {
+                        deck1.returnCard(deck1.player1Card1);//Returns Card 1 to deck
+                        deck1.logFile << "PLAYER 1: discards " << deck1.player1Card1 << endl;
+                        deck1.player1Card1 = deck1.player1Card2;//Card 1 becomes Card 2
+                        deck1.player1Card2 = 0;//Card 2 set to zero
+                    } else if (num == 2) {
+                        deck1.returnCard(deck1.player1Card2);//Returns Card 2 to deck
+                        deck1.logFile << "PLAYER 1: discards " << deck1.player1Card2 << endl;
+                        deck1.player1Card2 = 0;//Card 2 set to zero
+                    }
+                    deck1.logFile << "PLAYER 1: hand " << deck1.player1Card1 << endl;
+                    deck1.logFile << "DECK: ";
+                    deck1.printCardsLog();
                 }
-                prev->next = temp->next;
-                delete temp;
             }
-            //Inserting the old process at the head of the list
-            if (processIter == NULL || processIter->burstTime > currentRunning->burstTime) {//case for head
-                currentRunning->next = processIter;
-                pHead = currentRunning;
-            } else {//Inserting the old process into sorted process ready queue
-                while (processIter->next != NULL && processIter->next->burstTime <= currentRunning->burstTime) {
-                    processIter = processIter->next;
+            pthread_mutex_unlock(&player_mutex);//unlock deck
+            pthread_cond_signal(&d1);//signal dealer that turn is over
+            if (deck1.win) {//If player won then exit round by terminating thread
+                deck1.logFile << "PLAYER 1: exits round" << endl;
+                pthread_exit(NULL);
+            }
+        }
+        if (playerNum == 2) {
+            pthread_mutex_lock(&player_mutex);
+            pthread_cond_wait(&p2, &player_mutex);
+
+            if (!deck1.win) {
+                deck1.player2Card2 = deck1.drawCard();
+                deck1.logFile << "PLAYER 2: hand " << deck1.player2Card1 << endl;
+                deck1.logFile << "Player 2: draws " << deck1.player2Card2 << endl;
+
+                if (deck1.player2Card1 == deck1.player2Card2) {
+                    deck1.win = true;
+                    deck1.logFile << "PLAYER 2: hand " << deck1.player2Card1 << " " << deck1.player2Card2 << endl;
+                    deck1.logFile << "PLAYER 2: wins" << endl;
+                    cout << "PLAYER 2:" << endl;
+                    cout << "HAND " << deck1.player2Card1 << " " << deck1.player2Card2 << endl;
+                    cout << "WIN yes" << endl;
+                    cout << "PLAYER 3:" << endl;
+                    cout << "HAND " << deck1.player3Card1 << endl;
+                    cout << "WIN no" << endl;
+                    cout << "PLAYER 1:" << endl;
+                    cout << "HAND " << deck1.player1Card1 << endl;
+                    cout << "WIN no" << endl;
+                    cout << "DECK: ";
+                    deck1.printCards();
+                } else {
+                    num = deck1.randomCard();
+                    if (num == 1) {
+                        deck1.returnCard(deck1.player2Card1);//Returns Card 1 to deck
+                        deck1.logFile << "PLAYER 2: discards " << deck1.player2Card1 << endl;
+                        deck1.player2Card1 = deck1.player2Card2;//Card 1 becomes Card 2
+                        deck1.player2Card2 = 0;//Card 2 set to zero
+                    } else if (num == 2) {
+                        deck1.returnCard(deck1.player2Card2);//Returns Card 2 to deck
+                        deck1.logFile << "PLAYER 2: discards " << deck1.player2Card2 << endl;
+                        deck1.player2Card2 = 0;//Card 2 set to zero
+                    }
+                    deck1.logFile << "PLAYER 2: hand " << deck1.player2Card1 << endl;
+                    deck1.logFile << "DECK: ";
+                    deck1.printCardsLog();
                 }
-                currentRunning->next = processIter->next;
-                processIter->next = currentRunning;
             }
-            currentRunning->arrivalTime = sClock;//record the arrival of the old process in the readyQueue
-            currentRunning = newProcess;//Set new process as currentRunning
-            serviceTime = sClock + currentRunning->burstTime;//get service time of the process
-            currentRunning->serviceTime = serviceTime;
-            schedule_event(DEP, serviceTime,
-                           currentRunning);//schedule departure event, assign service time of process, assign process to event
-        } else {//Current process remains in CPU and new process gets inserted into sorted Process Ready Queue
-            if (processIter == NULL || processIter->burstTime > newProcess->burstTime) {//case for head
-                newProcess->next = processIter;
-                pHead = newProcess;
-            } else {//Inserting the new process into sorted process ready queue
-                while (processIter->next != NULL && processIter->next->burstTime <= newProcess->burstTime) {
-                    processIter = processIter->next;
+            pthread_mutex_unlock(&player_mutex);
+            pthread_cond_signal(&d1);
+            if (deck1.win) {
+                deck1.logFile << "PLAYER 2: exits round" << endl;
+                pthread_exit(NULL);
+            }
+        }
+        if (playerNum == 3) {
+            pthread_mutex_lock(&player_mutex);
+            pthread_cond_wait(&p3, &player_mutex);
+
+            if (!deck1.win) {
+                deck1.player3Card2 = deck1.drawCard();
+                deck1.logFile << "PLAYER 3: hand " << deck1.player3Card1 << endl;
+                deck1.logFile << "Player 3: draws " << deck1.player3Card2 << endl;
+
+                if (deck1.player3Card1 == deck1.player3Card2) {
+                    deck1.win = true;
+                    deck1.logFile << "PLAYER 3: hand " << deck1.player3Card1 << " " << deck1.player3Card2 << endl;
+                    deck1.logFile << "PLAYER 3: wins" << endl;
+                    cout << "PLAYER 3:" << endl;
+                    cout << "HAND " << deck1.player3Card1 << " " << deck1.player3Card2 << endl;
+                    cout << "WIN yes" << endl;
+                    cout << "PLAYER 1:" << endl;
+                    cout << "HAND " << deck1.player1Card1 << endl;
+                    cout << "WIN no" << endl;
+                    cout << "PLAYER 2:" << endl;
+                    cout << "HAND " << deck1.player2Card1 << endl;
+                    cout << "WIN no" << endl;
+                    cout << "DECK: ";
+                    deck1.printCards();
+                } else {
+                    num = deck1.randomCard();
+                    if (num == 1) {
+                        deck1.returnCard(deck1.player3Card1);//Returns Card 1 to deck
+                        deck1.logFile << "PLAYER 3: discards " << deck1.player3Card1 << endl;
+                        deck1.player3Card1 = deck1.player3Card2;//Card 2 becomes Card 1
+                        deck1.player3Card2 = 0;//Card 2 set to zero
+                    } else if (num == 2) {
+                        deck1.returnCard(deck1.player3Card2);//Returns Card 2 to deck
+                        deck1.logFile << "PLAYER 3: discards " << deck1.player3Card2 << endl;
+                        deck1.player3Card2 = 0;//Card 2 set to zero
+                    }
+                    deck1.logFile << "PLAYER 3: hand " << deck1.player3Card1 << endl;
+                    deck1.logFile << "DECK: ";
+                    deck1.printCardsLog();
                 }
-                newProcess->next = processIter->next;
-                processIter->next = newProcess;
+
             }
-            newProcess->arrivalTime = sClock;
-            newProcess->startQueueTime = sClock;
-        }
-    }
-}
-//////////////////////////////////////////////////////////////
-void roundRobin(struct event* eve) {
-    process* iterator;
-    iterator = pHead;
 
-    cout << "Arrival event arrived of time " << eve->time << " with PID of " << eve->p->pid << endl;
-    if (currentRunning == NULL) {//if no process is being serviced
-        currentRunning = eve->p;//set serverBusy pointer to the process being serviced
-        cout << "ARRIVAL HANDLER: Process ID: " << eve->p->pid << " being sent to CPU" << endl;
-
-        if (eve->p->burstTime > quantum) {//if the burst time of the process is greater than quantum time
-            serviceTime = quantum + sClock;//Assign system time process will complete.
-            eve->p->serviceTime = serviceTime;
-            schedule_event(TSO, serviceTime, eve->p);//schedule a timeslice event.
-            pHead = currentRunning->next;//make pHead the next process in the list
-            currentRunning->next = NULL;//detach process from processReadyQueue
-        }
-        else {//if the process will finish before the quantum time
-            serviceTime = sClock + eve->p->burstTime;
-            eve->p->serviceTime = serviceTime;
-            schedule_event(DEP, serviceTime, eve->p);
-            pHead = currentRunning->next;//make pHead the next process in the list
-            currentRunning->next = NULL;//detach process from processReadyQueue
-        }
-    }
-
-    else {//if there is process being serviced, put it Process Ready Queue
-        cout << "In roundRobin, process put into ready queue" << endl;
-        if (iterator == NULL) {//if list is empty
-            pHead = eve->p;
-        }
-        else {
-            while (iterator->next != NULL) {//move iterator to end of Process Queue
-                iterator = iterator->next;
+            pthread_mutex_unlock(&player_mutex);
+            pthread_cond_signal(&d1);
+            if (deck1.win) {
+                deck1.logFile << "PLAYER 3: exits round" << endl;
+                pthread_exit(NULL);
             }
-            iterator->next = eve->p;//Add process to end of Process Ready Queue
         }
-        eve->p->arrivalTime = sClock;//record the arrival time of process in the readyQueue
-        eve->p->startQueueTime = sClock;
     }
 }
